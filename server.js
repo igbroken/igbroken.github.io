@@ -6,8 +6,10 @@ const http = require('node:http');
 const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 3000);
 const ROOT_DIR = __dirname;
+const INDEX_PATH = path.join(ROOT_DIR, 'index.html');
 const CONTACT_LOG_PATH = path.join(ROOT_DIR, 'contact-messages.jsonl');
 const PAGEVIEW_LOG_PATH = path.join(ROOT_DIR, 'pageviews.jsonl');
+const INDEX_HTML = fs.existsSync(INDEX_PATH) ? fs.readFileSync(INDEX_PATH, 'utf8') : '';
 
 const MIME_BY_EXT = {
   '.css': 'text/css; charset=utf-8',
@@ -22,6 +24,11 @@ const MIME_BY_EXT = {
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(payload));
+}
+
+function sendHtml(response, html) {
+  response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  response.end(html);
 }
 
 function readJsonBody(request) {
@@ -66,9 +73,115 @@ async function appendJsonLine(filePath, payload) {
   await fsp.appendFile(filePath, line, { encoding: 'utf-8' });
 }
 
+function cleanText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function getToolCatalog() {
+  if (!INDEX_HTML) {
+    return { categories: [], tools: [] };
+  }
+
+  const categories = [];
+  const toolsByPath = new Map();
+
+  const categoryRegex =
+    /<h2 class="fiesta-tools-title">([\s\S]*?)<\/h2>[\s\S]*?<div class="fiesta-grid">([\s\S]*?)<\/div><\/div><\/div>/g;
+  const cardRegex =
+    /<a class="fiesta-card[^"]*" href="([^"]+)">[\s\S]*?<h3>([\s\S]*?)<\/h3>[\s\S]*?<p>([\s\S]*?)<\/p>/g;
+  const reverseRegex =
+    /<a class="fiesta-card-reverse" href="([^"]+)">(?:<svg[\s\S]*?<\/svg>)?([\s\S]*?)<\/a>/g;
+
+  let categoryMatch;
+  while ((categoryMatch = categoryRegex.exec(INDEX_HTML)) !== null) {
+    const category = cleanText(categoryMatch[1]);
+    categories.push(category);
+    const section = categoryMatch[2];
+
+    let cardMatch;
+    while ((cardMatch = cardRegex.exec(section)) !== null) {
+      const tool = {
+        path: cardMatch[1],
+        slug: cardMatch[1].replace(/^\/|\/$/g, ''),
+        name: cleanText(cardMatch[2]),
+        description: cleanText(cardMatch[3]),
+        category
+      };
+
+      if (tool.path.startsWith('/') && tool.slug && !toolsByPath.has(tool.path)) {
+        toolsByPath.set(tool.path, tool);
+      }
+    }
+
+    let reverseMatch;
+    while ((reverseMatch = reverseRegex.exec(section)) !== null) {
+      const reverseTool = {
+        path: reverseMatch[1],
+        slug: reverseMatch[1].replace(/^\/|\/$/g, ''),
+        name: cleanText(reverseMatch[2]),
+        description: '',
+        category
+      };
+
+      if (reverseTool.path.startsWith('/') && reverseTool.slug && !toolsByPath.has(reverseTool.path)) {
+        toolsByPath.set(reverseTool.path, reverseTool);
+      }
+    }
+  }
+
+  return {
+    categories: [...new Set(categories)],
+    tools: Array.from(toolsByPath.values())
+  };
+}
+
+const catalog = getToolCatalog();
+const toolMapBySlug = new Map(catalog.tools.map((tool) => [tool.slug, tool]));
+const toolPaths = new Set(catalog.tools.map((tool) => tool.path));
+
 async function handleApiRequest(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/api/health') {
-    sendJson(response, 200, { status: 'ok' });
+    sendJson(response, 200, { status: 'ok', toolCount: catalog.tools.length });
+    return true;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/categories') {
+    sendJson(response, 200, { categories: catalog.categories });
+    return true;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/tools') {
+    const query = sanitizeText(url.searchParams.get('q') || '', 200).toLowerCase();
+    const category = sanitizeText(url.searchParams.get('category') || '', 200).toLowerCase();
+
+    const filtered = catalog.tools.filter((tool) => {
+      const matchesQuery =
+        !query ||
+        tool.name.toLowerCase().includes(query) ||
+        tool.description.toLowerCase().includes(query) ||
+        tool.slug.includes(query);
+      const matchesCategory = !category || tool.category.toLowerCase() === category;
+      return matchesQuery && matchesCategory;
+    });
+
+    sendJson(response, 200, { total: filtered.length, tools: filtered });
+    return true;
+  }
+
+  if (request.method === 'GET' && url.pathname.startsWith('/api/tools/')) {
+    const slug = url.pathname.replace('/api/tools/', '').toLowerCase();
+    const tool = toolMapBySlug.get(slug);
+
+    if (!tool) {
+      sendJson(response, 404, { error: 'Tool not found' });
+      return true;
+    }
+
+    sendJson(response, 200, tool);
     return true;
   }
 
@@ -120,18 +233,36 @@ async function handleApiRequest(request, response, url) {
 }
 
 function isSafePath(requestPath) {
-  return !requestPath.includes('..');
+  if (requestPath.includes('\0')) {
+    return false;
+  }
+
+  const resolvedPath = path.resolve(ROOT_DIR, `.${requestPath}`);
+  return resolvedPath === ROOT_DIR || resolvedPath.startsWith(`${ROOT_DIR}${path.sep}`);
 }
 
 async function serveStaticFile(response, requestPath) {
-  const normalizedPath = requestPath === '/' ? '/index.html' : requestPath;
+  const routePath = requestPath === '/' ? '/index.html' : requestPath;
+  const normalizedPath = path.posix.normalize(routePath).startsWith('/')
+    ? path.posix.normalize(routePath)
+    : `/${path.posix.normalize(routePath)}`;
+
+  if (normalizedPath !== '/index.html' && toolPaths.has(normalizedPath)) {
+    sendHtml(response, INDEX_HTML);
+    return;
+  }
 
   if (!isSafePath(normalizedPath)) {
     sendJson(response, 400, { error: 'Invalid path.' });
     return;
   }
 
-  const filePath = path.join(ROOT_DIR, normalizedPath);
+  if (normalizedPath === '/index.html' && INDEX_HTML) {
+    sendHtml(response, INDEX_HTML);
+    return;
+  }
+
+  const filePath = path.resolve(ROOT_DIR, `.${normalizedPath}`);
 
   try {
     const stats = await fsp.stat(filePath);
