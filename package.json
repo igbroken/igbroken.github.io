@@ -1,0 +1,9 @@
+{
+  "name": "igbroken-github-io",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frontend and backend starter for igbroken.github.io",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
