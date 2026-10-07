@@ -6,19 +6,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ROOT_DIR = __dirname;
 const INDEX_PATH = path.join(ROOT_DIR, "index.html");
+const STYLES_PATH = path.join(ROOT_DIR, "styles.css");
+const CNAME_PATH = path.join(ROOT_DIR, "CNAME");
+const INDEX_HTML = fs.readFileSync(INDEX_PATH, "utf8");
+const STYLES_CSS = fs.readFileSync(STYLES_PATH, "utf8");
+const CNAME_VALUE = fs.existsSync(CNAME_PATH)
+  ? fs.readFileSync(CNAME_PATH, "utf8")
+  : "";
 
 function cleanText(value) {
   return value
     .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
 function getToolCatalog() {
-  const html = fs.readFileSync(INDEX_PATH, "utf8");
+  const html = INDEX_HTML;
   const categories = [];
   const toolsByPath = new Map();
 
@@ -80,7 +84,17 @@ const catalog = getToolCatalog();
 const toolMapBySlug = new Map(catalog.tools.map((tool) => [tool.slug, tool]));
 
 app.use(express.json());
-app.use(express.static(ROOT_DIR));
+
+app.get("/styles.css", (req, res) => {
+  res.type("text/css").send(STYLES_CSS);
+});
+
+app.get("/CNAME", (req, res) => {
+  if (!CNAME_VALUE) {
+    return res.status(404).end();
+  }
+  return res.type("text/plain").send(CNAME_VALUE);
+});
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", toolCount: catalog.tools.length });
@@ -123,12 +137,12 @@ app.get("/api/tools/:slug", (req, res) => {
 
 for (const tool of catalog.tools) {
   app.get(tool.path, (req, res) => {
-    res.sendFile(INDEX_PATH);
+    res.type("html").send(INDEX_HTML);
   });
 }
 
 app.get("/", (req, res) => {
-  res.sendFile(INDEX_PATH);
+  res.type("html").send(INDEX_HTML);
 });
 
 app.listen(PORT, () => {
