@@ -16,7 +16,6 @@ const CNAME_VALUE = fs.existsSync(CNAME_PATH)
 
 function cleanText(value) {
   return value
-    .replace(/<[^>]*>/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -30,7 +29,8 @@ function getToolCatalog() {
     /<h2 class="fiesta-tools-title">([\s\S]*?)<\/h2>[\s\S]*?<div class="fiesta-grid">([\s\S]*?)<\/div><\/div><\/div>/g;
   const cardRegex =
     /<a class="fiesta-card[^"]*" href="([^"]+)">[\s\S]*?<h3>([\s\S]*?)<\/h3>[\s\S]*?<p>([\s\S]*?)<\/p>/g;
-  const reverseRegex = /<a class="fiesta-card-reverse" href="([^"]+)">([\s\S]*?)<\/a>/g;
+  const reverseRegex =
+    /<a class="fiesta-card-reverse" href="([^"]+)">(?:<svg[\s\S]*?<\/svg>)?([\s\S]*?)<\/a>/g;
 
   let categoryMatch;
   while ((categoryMatch = categoryRegex.exec(html)) !== null) {
